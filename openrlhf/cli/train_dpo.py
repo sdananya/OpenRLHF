@@ -11,6 +11,26 @@ from openrlhf.models import Actor
 from openrlhf.trainer.dpo_trainer import DPOTrainer
 from openrlhf.utils import get_strategy, get_tokenizer
 
+# Patch for PyTorch >= 2.10 strict zip in LR scheduler (incompatible with DeepSpeed param group changes)
+import torch.optim.lr_scheduler as _lr_sched
+_orig_update_lr = _lr_sched.LRScheduler._update_lr
+def _patched_update_lr(self, epoch=None):
+    from torch.optim.lr_scheduler import _enable_get_lr_call, _update_param_group_val, _param_groups_val_list
+    with _enable_get_lr_call(self):
+        if epoch is None:
+            self.last_epoch += 1
+            values = self.get_lr()
+        else:
+            self.last_epoch = epoch
+            if hasattr(self, "_get_closed_form_lr"):
+                values = self._get_closed_form_lr()
+            else:
+                values = self.get_lr()
+    for param_group, lr in zip(self.optimizer.param_groups, values):
+        _update_param_group_val(param_group, "lr", lr)
+    self._last_lr = _param_groups_val_list(self.optimizer, "lr")
+_lr_sched.LRScheduler._update_lr = _patched_update_lr
+
 
 def train(args):
     # configure strategy
